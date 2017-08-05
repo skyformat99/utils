@@ -4,7 +4,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
+	"encoding/binary"
 	"fmt"
+
+	"golang.org/x/crypto/salsa20/salsa"
 
 	"crypto/rc4"
 
@@ -41,6 +44,46 @@ func (p *PlainEncDecrypter) Encrypt(dst, src []byte) {
 
 func (p *PlainEncDecrypter) Decrypt(dst, src []byte) {
 	copy(dst, src)
+}
+
+type Salsa20EncDecrypter struct {
+	iv      []byte
+	key     [32]byte
+	counter uint64
+}
+
+func (s *Salsa20EncDecrypter) GetIV() []byte {
+	return s.iv
+}
+
+func (s *Salsa20EncDecrypter) Encrypt(dst, src []byte) {
+	s.XORKeyStream(dst, src)
+}
+
+func (s *Salsa20EncDecrypter) Decrypt(dst, src []byte) {
+	s.XORKeyStream(dst, src)
+}
+
+func (s *Salsa20EncDecrypter) XORKeyStream(dst, src []byte) {
+	if len(src) == 0 {
+		return
+	}
+	var b [16]byte
+	copy(b[:8], s.iv[:8])
+	binary.LittleEndian.PutUint64(b[8:], s.counter/64)
+	padLen := int(s.counter % 64)
+	if padLen == 0 {
+		salsa.XORKeyStream(dst, src, &b, &s.key)
+		s.counter += uint64(len(src))
+		return
+	}
+	var srcbuf [64]byte
+	var dstbuf [64]byte
+	n := copy(srcbuf[padLen:], src)
+	salsa.XORKeyStream(dstbuf[:], srcbuf[:], &b, &s.key)
+	copy(dst[:n], dstbuf[padLen:])
+	s.counter += uint64(n)
+	s.XORKeyStream(dst[n:], src[n:])
 }
 
 // copy from https://github.com/riobard/go-shadowsocks2/blob/master/core/cipher.go
@@ -191,6 +234,22 @@ func NewPlainDecrypter(_, _ []byte) (Decrypter, error) {
 	return &PlainEncDecrypter{}, nil
 }
 
+func NewSalsa20EncDecrypter(key, iv []byte) (*Salsa20EncDecrypter, error) {
+	var s Salsa20EncDecrypter
+	s.counter = 0
+	s.iv = iv
+	copy(s.key[:], key)
+	return &s, nil
+}
+
+func NewSalsa20Encrypter(key, iv []byte) (Encrypter, error) {
+	return NewSalsa20EncDecrypter(key, iv)
+}
+
+func NewSalsa20Decrypter(key, iv []byte) (Decrypter, error) {
+	return NewSalsa20EncDecrypter(key, iv)
+}
+
 var cipherMethod = map[string]struct {
 	keylen       int
 	ivlen        int
@@ -206,6 +265,7 @@ var cipherMethod = map[string]struct {
 	"chacha20":      {32, 8, NewChaCha20Encrypter, NewChaCha20Decrypter},
 	"chacha20-ietf": {32, 12, NewChaCha20Encrypter, NewChaCha20Decrypter},
 	"rc4-md5":       {16, 16, NewRC4MD5Encrypter, NewRC4MD5Decrypter},
+	"salsa20":       {32, 8, NewSalsa20Encrypter, NewSalsa20Decrypter},
 	"plain":         {0, 0, NewPlainEncrypter, NewPlainDecrypter},
 }
 
