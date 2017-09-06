@@ -3,7 +3,9 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"reflect"
 	"sync"
+	"unsafe"
 )
 
 const defaultMethod = "aes-256-cfb"
@@ -63,4 +65,21 @@ func (c *ExitCleaner) Delete(index int) func() {
 		c.runner = append(runner1, runner2...)
 	}
 	return f
+}
+
+func SliceToString(b []byte) (s string) {
+	pbytes := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+	pstring := (*reflect.StringHeader)(unsafe.Pointer(&s))
+	pstring.Data = pbytes.Data
+	pstring.Len = pbytes.Len
+	return
+}
+
+func StringToSlice(s string) (b []byte) {
+	pbytes := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+	pstring := (*reflect.StringHeader)(unsafe.Pointer(&s))
+	pbytes.Data = pstring.Data
+	pbytes.Len = pstring.Len
+	pbytes.Cap = pstring.Len
+	return
 }
