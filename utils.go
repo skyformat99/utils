@@ -83,3 +83,38 @@ func StringToSlice(s string) (b []byte) {
 	pbytes.Cap = pstring.Len
 	return
 }
+
+type Closer struct {
+	closed bool
+	lock   sync.Mutex
+	die    chan bool
+}
+
+func (c *Closer) Close(f func()) {
+	c.lock.Lock()
+	if c.closed {
+		c.lock.Unlock()
+		return
+	}
+	c.closed = true
+	c.lock.Unlock()
+
+	if c.die == nil {
+		c.die = make(chan bool)
+	}
+
+	close(c.die)
+
+	if f != nil {
+		f()
+	}
+}
+
+func (c *Closer) DieCh() <-chan bool {
+	c.lock.Lock()
+	if c.die == nil {
+		c.die = make(chan bool)
+	}
+	c.lock.Unlock()
+	return c.die
+}
