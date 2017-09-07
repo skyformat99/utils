@@ -6,42 +6,30 @@ import (
 )
 
 type AsyncRunner struct {
-	lock    sync.Mutex
-	started bool
-	funcs   chan func()
+	once  sync.Once
+	funcs chan func()
 }
 
 func (a *AsyncRunner) worker() {
-	defer func() {
-		a.lock.Lock()
-		a.started = false
-		a.lock.Unlock()
-	}()
 	for {
 		select {
 		case f := <-a.funcs:
 			if f != nil {
 				f()
 			}
-		case <-time.After(time.Second * 15):
+		case <-time.After(time.Second * 5):
 			return
 		}
 	}
 }
 
 func (a *AsyncRunner) Run(f func()) {
-	a.lock.Lock()
-	defer a.lock.Unlock()
-	if a.funcs == nil {
-		a.funcs = make(chan func(), 1024)
-	}
-	if !a.started {
-		a.started = true
-		go a.worker()
-	}
+	a.once.Do(func() {
+		a.funcs = make(chan func(), 16)
+	})
 	select {
 	case a.funcs <- f:
-	case <-time.After(time.Millisecond * 10):
-		go f()
+	default:
+		go a.worker()
 	}
 }

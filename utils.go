@@ -26,6 +26,7 @@ func GetRandomBytes(len int) []byte {
 type ExitCleaner struct {
 	lock   sync.Mutex
 	runner []func()
+	once   sync.Once
 }
 
 func (c *ExitCleaner) Push(f func()) int {
@@ -37,6 +38,11 @@ func (c *ExitCleaner) Push(f func()) int {
 }
 
 func (c *ExitCleaner) Exit() {
+	flag := true
+	c.once.Do(func() { flag = false })
+	if flag {
+		return
+	}
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	for i := len(c.runner) - 1; i >= 0; i-- {
@@ -84,37 +90,90 @@ func StringToSlice(s string) (b []byte) {
 	return
 }
 
-type Closer struct {
-	closed bool
-	lock   sync.Mutex
-	die    chan bool
+type Die struct {
+	RWLock
+	ch  chan bool
+	die bool
 }
 
-func (c *Closer) Close(f func()) {
-	c.lock.Lock()
-	if c.closed {
-		c.lock.Unlock()
+func (d *Die) Ch() (ch <-chan bool) {
+	d.RunInLock(func() {
+		if d.ch == nil {
+			d.ch = make(chan bool)
+		}
+		ch = d.ch
+	})
+	return
+}
+
+func (d *Die) Die(f func()) {
+	var die bool
+
+	d.RunInLock(func() {
+		die = d.die
+		if !d.die {
+			d.die = true
+		}
+		if d.ch == nil {
+			d.ch = make(chan bool)
+		}
+	})
+
+	if die {
 		return
 	}
-	c.closed = true
-	c.lock.Unlock()
 
-	if c.die == nil {
-		c.die = make(chan bool)
-	}
-
-	close(c.die)
+	close(d.ch)
 
 	if f != nil {
 		f()
 	}
 }
 
-func (c *Closer) DieCh() <-chan bool {
-	c.lock.Lock()
-	if c.die == nil {
-		c.die = make(chan bool)
+func (d *Die) IsDead() (dead bool) {
+	d.RunInRLock(func() {
+		dead = d.die
+	})
+	return
+}
+
+type Lock struct {
+	sync.Mutex
+}
+
+func (l *Lock) RunInLock(f func()) {
+	l.Lock()
+	defer l.Unlock()
+	if f != nil {
+		f()
 	}
-	c.lock.Unlock()
-	return c.die
+}
+
+type RWLock struct {
+	sync.RWMutex
+}
+
+func (l *RWLock) RunInLock(f func()) {
+	l.Lock()
+	defer l.Unlock()
+	if f != nil {
+		f()
+	}
+}
+
+func (l *RWLock) RunInRLock(f func()) {
+	l.RLock()
+	defer l.RUnlock()
+	if f != nil {
+		f()
+	}
+}
+
+type Locker interface {
+	RunInLock(f func())
+}
+
+type RWLocker interface {
+	Locker
+	RunInRLock(f func())
 }
