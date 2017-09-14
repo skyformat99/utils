@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"reflect"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -176,4 +177,44 @@ type Locker interface {
 type RWLocker interface {
 	Locker
 	RunInRLock(f func())
+}
+
+type Expires struct {
+	E time.Time
+	L RWLock
+}
+
+func (e *Expires) isExpired() bool {
+	return time.Now().After(e.E)
+}
+
+func (e *Expires) IsExpired() bool {
+	e.L.RLock()
+	defer e.L.RUnlock()
+	return e.isExpired()
+}
+
+func (e *Expires) update(d time.Duration) {
+	e.E = time.Now().Add(d)
+}
+
+func (e *Expires) Update(d time.Duration) {
+	e.L.Lock()
+	e.update(d)
+	e.L.Unlock()
+}
+
+func (e *Expires) IsExpiredAndUpdate(d time.Duration) bool {
+	expired := e.IsExpired()
+	if !expired {
+		return expired
+	}
+	e.L.Lock()
+	defer e.L.Unlock()
+	expired = e.isExpired()
+	if expired {
+		e.update(d)
+		return true
+	}
+	return false
 }
