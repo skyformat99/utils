@@ -15,13 +15,14 @@ type AsyncRunner struct {
 func (a *AsyncRunner) worker() {
 	atomic.AddInt32(&a.workers, 1)
 	defer atomic.AddInt32(&a.workers, -1)
+	timer := time.NewTimer(time.Second * 5)
 	for {
 		select {
 		case f := <-a.funcs:
 			if f != nil {
 				f()
 			}
-		case <-time.After(time.Second * 5):
+		case <-timer.C:
 			return
 		}
 	}
