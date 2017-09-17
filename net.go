@@ -13,12 +13,37 @@ type AddrCtx struct {
 	Ctx interface{}
 }
 
-func RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn, error), mtu int, expires int) {
+// UDPServerCtx is the control centor of the udp server
+type UDPServerCtx struct {
+	Mtu     int
+	Expires int
+
+	once     sync.Once
+	connsMap *sync.Map
+	bufPool  *sync.Pool
+	die      chan bool
+}
+
+func (ctx *UDPServerCtx) init() {
+	ctx.once.Do(func() {
+		ctx.die = make(chan bool)
+		ctx.connsMap = &sync.Map{}
+		ctx.bufPool = &sync.Pool{New: func() interface{} {
+			return make([]byte, ctx.Mtu)
+		}}
+	})
+}
+
+func (ctx *UDPServerCtx) close() {
+	close(ctx.die)
+}
+
+// RunUDPServer runs the udp server
+func (ctx *UDPServerCtx) RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn, error)) {
 	defer conn.Close()
-	die := make(chan bool)
-	defer close(die)
-	connsMap := &sync.Map{}
-	buf := make([]byte, mtu)
+	ctx.init()
+	defer ctx.close()
+	buf := make([]byte, ctx.Mtu)
 
 	for {
 		n, addr, err := conn.ReadFrom(buf)
@@ -31,10 +56,10 @@ func RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn
 		}
 		addrstr := addr.String()
 		b := buf[:n]
-		v, ok := connsMap.Load(addrstr)
+		v, ok := ctx.connsMap.Load(addrstr)
 		if !ok {
-			subconn := newSubConn(conn, die, connsMap, addr)
-			connsMap.Store(addrstr, subconn)
+			subconn := newSubConn(conn, ctx, addr)
+			ctx.connsMap.Store(addrstr, subconn)
 			v = subconn
 			go func(subconn *SubConn) {
 				defer subconn.Close()
@@ -44,7 +69,7 @@ func RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn
 				}
 				defer c1.Close()
 				defer c2.Close()
-				PipeForUDPServer(c1, c2, mtu, expires)
+				PipeForUDPServer(c1, c2, ctx)
 			}(subconn)
 		}
 		subconn := v.(*SubConn)
@@ -52,6 +77,7 @@ func RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn
 	}
 }
 
+// NewUDPListener simplely calls the net.ListenUDP and create a udp listener
 func NewUDPListener(address string) (conn *net.UDPConn, err error) {
 	laddr, err := net.ResolveUDPAddr("udp", address)
 	if err == nil {
@@ -60,16 +86,17 @@ func NewUDPListener(address string) (conn *net.UDPConn, err error) {
 	return
 }
 
-func PipeForUDPServer(c1, c2 net.Conn, mtu int, expires int) {
+// PipeForUDPServer is a simple pipe loop for udp server
+func PipeForUDPServer(c1, c2 net.Conn, ctx *UDPServerCtx) {
 	c1die := make(chan bool)
 	c2die := make(chan bool)
 	f := func(dst, src net.Conn, die chan bool) {
 		defer close(die)
 		var n int
 		var err error
-		buf := make([]byte, mtu)
+		buf := make([]byte, ctx.Mtu)
 		for err == nil {
-			src.SetReadDeadline(time.Now().Add(time.Second * time.Duration(expires)))
+			src.SetReadDeadline(time.Now().Add(time.Second * time.Duration(ctx.Expires)))
 			n, err = src.Read(buf)
 			if n > 0 || err == nil {
 				_, err = dst.Write(buf[:n])
