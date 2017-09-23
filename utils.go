@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -217,4 +218,123 @@ func (e *Expires) IsExpiredAndUpdate(d time.Duration) bool {
 		return true
 	}
 	return false
+}
+
+var domainNodePool = &sync.Pool{New: func() interface{} {
+	return &domainNode{
+		nodes: make(map[string]*domainNode),
+	}
+}}
+
+// DomainRoot is a tree
+type DomainRoot struct {
+	nodes     map[string]*domainNode
+	nodesPool sync.Pool
+}
+
+func NewDomainRoot() *DomainRoot {
+	return &DomainRoot{
+		nodes: make(map[string]*domainNode),
+	}
+}
+
+func reverse(ss []string) {
+	last := len(ss) - 1
+	for i := 0; i < len(ss)/2; i++ {
+		ss[i], ss[last-i] = ss[last-i], ss[i]
+	}
+}
+
+func (root *DomainRoot) Put(host string) {
+	domains := strings.Split(host, ".")
+	if len(domains) < 2 {
+		return
+	}
+	reverse(domains)
+	nodes := root.nodes
+	var depth int
+	for _, domain := range domains {
+		if len(domain) == 0 {
+			continue
+		}
+		depth++
+		v, ok := nodes[domain]
+		if ok {
+			if v.fold {
+				break
+			} else if len(v.nodes) > 10 && depth > 1 {
+				v.fold = true
+				v.nodes = nil
+				break
+			}
+			nodes = v.nodes
+			continue
+		}
+		v = &domainNode{
+			depth:  depth,
+			domain: domain,
+			nodes:  make(map[string]*(domainNode)),
+		}
+		nodes[domain] = v
+		nodes = v.nodes
+	}
+}
+
+func (root *DomainRoot) Test(host string) bool {
+	domains := strings.Split(host, ".")
+	if len(domains) < 2 {
+		return false
+	}
+	reverse(domains)
+	nodes := root.nodes
+	depth := 0
+	for _, domain := range domains {
+		if len(domain) == 0 {
+			continue
+		}
+		v, ok := nodes[domain]
+		if !ok {
+			return false
+		}
+		if v.fold {
+			return true
+		}
+		depth++
+		nodes = v.nodes
+	}
+	if len(domains) == depth {
+		return true
+	}
+	return false
+}
+
+func (root *DomainRoot) Get() (foldHosts []string, hosts []string) {
+	var domains []string
+	var f func(map[string]*domainNode, bool)
+	f = func(nodes map[string]*domainNode, fold bool) {
+		for _, node := range nodes {
+			domains = append([]string{node.domain}, domains...)
+			f(node.nodes, node.fold)
+			domains = domains[1:]
+		}
+		if len(nodes) == 0 {
+			host := strings.Join(domains, ".")
+			if fold {
+				foldHosts = append(foldHosts, host)
+			} else {
+				hosts = append(hosts, host)
+			}
+		}
+	}
+
+	f(root.nodes, false)
+
+	return nil, hosts
+}
+
+type domainNode struct {
+	domain string
+	depth  int
+	fold   bool
+	nodes  map[string]*domainNode
 }

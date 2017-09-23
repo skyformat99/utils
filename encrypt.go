@@ -270,7 +270,7 @@ var cipherMethod = map[string]struct {
 }
 
 func NewEncrypter(method, password string) (enc Encrypter, err error) {
-	if password == "" {
+	if password == "" && method != "plain" {
 		err = fmt.Errorf("password cannot be empty")
 		return
 	}
@@ -283,7 +283,7 @@ func NewEncrypter(method, password string) (enc Encrypter, err error) {
 }
 
 func NewDecrypter(method, password string, iv []byte) (dec Decrypter, err error) {
-	if password == "" {
+	if password == "" && method != "plain" {
 		err = fmt.Errorf("password cannot be empty")
 		return
 	}
