@@ -329,7 +329,7 @@ func (root *DomainRoot) Get() (foldHosts []string, hosts []string) {
 
 	f(root.nodes, false)
 
-	return nil, hosts
+	return 
 }
 
 type domainNode struct {
