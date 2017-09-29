@@ -232,6 +232,7 @@ type DomainRoot struct {
 	nodesPool sync.Pool
 }
 
+// NewDomainRoot returns a new domainroot and init it
 func NewDomainRoot() *DomainRoot {
 	return &DomainRoot{
 		nodes: make(map[string]*domainNode),
@@ -245,6 +246,7 @@ func reverse(ss []string) {
 	}
 }
 
+// Put put a new host into domainroot
 func (root *DomainRoot) Put(host string) {
 	domains := strings.Split(host, ".")
 	if len(domains) < 2 {
@@ -258,14 +260,18 @@ func (root *DomainRoot) Put(host string) {
 			continue
 		}
 		depth++
-		v, ok := nodes[domain]
+		v, ok := nodes["*"]
 		if ok {
-			if v.fold {
-				break
-			} else if len(v.nodes) > 10 && depth > 1 {
-				v.fold = true
-				v.nodes = nil
-				break
+			return
+		}
+		v, ok = nodes[domain]
+		if ok {
+			if len(v.nodes) > 10 && depth > 1 {
+				for k := range v.nodes {
+					delete(v.nodes, k)
+				}
+				v.nodes["*"] = nil
+				return
 			}
 			nodes = v.nodes
 			continue
@@ -292,12 +298,13 @@ func (root *DomainRoot) Test(host string) bool {
 		if len(domain) == 0 {
 			continue
 		}
-		v, ok := nodes[domain]
+		v, ok := nodes["*"]
+		if ok {
+			return true
+		}
+		v, ok = nodes[domain]
 		if !ok {
 			return false
-		}
-		if v.fold {
-			return true
 		}
 		depth++
 		nodes = v.nodes
@@ -308,33 +315,32 @@ func (root *DomainRoot) Test(host string) bool {
 	return false
 }
 
-func (root *DomainRoot) Get() (foldHosts []string, hosts []string) {
+func (root *DomainRoot) Get() (hosts []string) {
 	var domains []string
-	var f func(map[string]*domainNode, bool)
-	f = func(nodes map[string]*domainNode, fold bool) {
-		for _, node := range nodes {
-			domains = append([]string{node.domain}, domains...)
-			f(node.nodes, node.fold)
+	var f func(map[string]*domainNode)
+	f = func(nodes map[string]*domainNode) {
+		for domain, node := range nodes {
+			domains = append([]string{domain}, domains...)
+			if node == nil {
+				f(nil)
+			} else {
+				f(node.nodes)
+			}
 			domains = domains[1:]
 		}
 		if len(nodes) == 0 {
 			host := strings.Join(domains, ".")
-			if fold {
-				foldHosts = append(foldHosts, host)
-			} else {
-				hosts = append(hosts, host)
-			}
+			hosts = append(hosts, host)
 		}
 	}
 
-	f(root.nodes, false)
+	f(root.nodes)
 
-	return 
+	return
 }
 
 type domainNode struct {
 	domain string
 	depth  int
-	fold   bool
 	nodes  map[string]*domainNode
 }
