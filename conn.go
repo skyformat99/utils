@@ -213,6 +213,11 @@ func (conn *SubConn) Read(b []byte) (n int, err error) {
 		rtch = rtimer.C
 		defer rtimer.Stop()
 	}
+	// defer func() {
+	// 	conn.lock.Lock()
+	// 	defer conn.lock.Unlock()
+	// 	conn.rbuf = nil
+	// }()
 	select {
 	case <-rtch:
 		err = fmt.Errorf("timeout")

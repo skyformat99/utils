@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // AddrCtx carries a ctx inteface and can sotre some control message
@@ -38,8 +40,10 @@ func (ctx *UDPServerCtx) close() {
 	close(ctx.die)
 }
 
-// RunUDPServer runs the udp server
-func (ctx *UDPServerCtx) RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn, error)) {
+// runUDPServer runs the udp server
+// conn is the underlying packet connection
+// handle is the processor of new connection
+func (ctx *UDPServerCtx) runUDPServer(conn net.PacketConn, handle func(*SubConn)) {
 	defer conn.Close()
 	ctx.init()
 	defer ctx.close()
@@ -61,20 +65,25 @@ func (ctx *UDPServerCtx) RunUDPServer(conn net.PacketConn, create func(*SubConn)
 			subconn := newSubConn(conn, ctx, addr)
 			ctx.connsMap.Store(addrstr, subconn)
 			v = subconn
-			go func(subconn *SubConn) {
-				defer subconn.Close()
-				c1, c2, err := create(subconn)
-				if err != nil {
-					return
-				}
-				defer c1.Close()
-				defer c2.Close()
-				PipeForUDPServer(c1, c2, ctx)
-			}(subconn)
+			go handle(subconn)
 		}
 		subconn := v.(*SubConn)
 		subconn.input(b)
 	}
+}
+
+// RunUDPServer runs the udp server
+func (ctx *UDPServerCtx) RunUDPServer(conn net.PacketConn, create func(*SubConn) (net.Conn, net.Conn, error)) {
+	ctx.runUDPServer(conn, func(subconn *SubConn) {
+		defer subconn.Close()
+		c1, c2, err := create(subconn)
+		if err != nil {
+			return
+		}
+		defer c1.Close()
+		defer c2.Close()
+		PipeForUDPServer(c1, c2, ctx)
+	})
 }
 
 // NewUDPListener simplely calls the net.ListenUDP and create a udp listener
@@ -109,4 +118,97 @@ func PipeForUDPServer(c1, c2 net.Conn, ctx *UDPServerCtx) {
 	case <-c1die:
 	case <-c2die:
 	}
+}
+
+// SubUDPListener implements net.Listener and acts like tcp net.Listener
+type SubUDPListener struct {
+	conn   net.PacketConn
+	ctx    *UDPServerCtx
+	connch chan *SubConn
+}
+
+// ListenSubUDP returns net.Listener
+func ListenSubUDP(network, address string) (net.Listener, error) {
+	return ListenSubUDPWithCtx(network, address, &UDPServerCtx{
+		Expires: 60,
+		Mtu:     1500,
+	})
+}
+
+// ListenSubUDPWithConn returns net.Listener
+func ListenSubUDPWithConn(conn net.PacketConn) (net.Listener, error) {
+	return ListenSubUDPWithConnAndCtx(conn, &UDPServerCtx{
+		Expires: 60,
+		Mtu:     1500,
+	})
+}
+
+// ListenSubUDPWithCtx returns net.Listener
+func ListenSubUDPWithCtx(network, address string, ctx *UDPServerCtx) (net.Listener, error) {
+	laddr, err := net.ResolveUDPAddr(network, address)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP(network, laddr)
+	if err != nil {
+		return nil, err
+	}
+	return ListenSubUDPWithConnAndCtx(conn, ctx)
+}
+
+// ListenSubUDPWithConnAndCtx returns net.Listener
+func ListenSubUDPWithConnAndCtx(conn net.PacketConn, ctx *UDPServerCtx) (net.Listener, error) {
+	listener := &SubUDPListener{
+		conn:   conn,
+		ctx:    ctx,
+		connch: make(chan *SubConn, 16),
+	}
+	return listener, nil
+}
+
+// Close close listener and destroy everything
+func (listener *SubUDPListener) Close() error {
+	if listener.conn != nil {
+		listener.conn.Close()
+	}
+	if listener.ctx != nil {
+		listener.ctx.close()
+	}
+	return nil
+}
+
+// Accept accepts a new net.Conn from listner
+func (listener *SubUDPListener) Accept() (net.Conn, error) {
+	conn, err := listener.AcceptSub()
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// AcceptSub accepts a new subconn from listner
+func (listener *SubUDPListener) AcceptSub() (*SubConn, error) {
+	select {
+	case <-listener.ctx.die:
+		return nil, errors.New("acccept from closed listener")
+	case subconn := <-listener.connch:
+		return subconn, nil
+	}
+}
+
+// Addr returns the local address of underlying packet connection
+func (listener *SubUDPListener) Addr() net.Addr {
+	return listener.conn.LocalAddr()
+}
+
+func (listener *SubUDPListener) handleNewConn(conn *SubConn) {
+	select {
+	case <-listener.ctx.die:
+		conn.Close()
+	case listener.connch <- conn:
+	}
+}
+
+func (listener *SubUDPListener) runServer() {
+	listener.ctx.runUDPServer(listener.conn, listener.handleNewConn)
 }
