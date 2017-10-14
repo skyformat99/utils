@@ -125,6 +125,7 @@ type SubUDPListener struct {
 	conn   net.PacketConn
 	ctx    *UDPServerCtx
 	connch chan *SubConn
+	once   sync.Once
 }
 
 // ListenSubUDP returns net.Listener
@@ -188,6 +189,9 @@ func (listener *SubUDPListener) Accept() (net.Conn, error) {
 
 // AcceptSub accepts a new subconn from listner
 func (listener *SubUDPListener) AcceptSub() (*SubConn, error) {
+	listener.once.Do(func() {
+		go listener.runServer()
+	})
 	select {
 	case <-listener.ctx.die:
 		return nil, errors.New("acccept from closed listener")

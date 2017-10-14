@@ -204,7 +204,7 @@ func (conn *SubConn) Read(b []byte) (n int, err error) {
 	conn.lock.Unlock()
 	var rtch <-chan time.Time
 	now := time.Now()
-	if conn.rtime.Equal(time.Time{}) {
+	if !conn.rtime.Equal(time.Time{}) {
 		if now.After(conn.rtime) {
 			err = fmt.Errorf("timeout")
 			return
