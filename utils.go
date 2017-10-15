@@ -3,7 +3,10 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"io"
+	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -343,4 +346,100 @@ type domainNode struct {
 	domain string
 	depth  int
 	nodes  map[string]*domainNode
+}
+
+func SplitHostAndPort(hostport string) (host string, port int, err error) {
+	host, portStr, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return
+	}
+	port, err = strconv.Atoi(portStr)
+	return
+}
+
+func SplitIPAndPort(ipport string) (ip net.IP, port int, err error) {
+	ipstr, port, err := SplitHostAndPort(ipport)
+	if err != nil {
+		return
+	}
+	ip = net.ParseIP(ipstr)
+	return
+}
+
+func PipeUDPOverTCP(udpconn net.Conn, tcpconn net.Conn, bufpool *sync.Pool, timeout time.Duration, pseudo []byte) {
+	die1 := make(chan struct{})
+	die2 := make(chan struct{})
+
+	ubuf := bufpool.Get().([]byte)
+	defer bufpool.Put(ubuf)
+	tbuf := bufpool.Get().([]byte)
+	defer bufpool.Put(tbuf)
+
+	trySetTimeout := func(conn net.Conn, isRead bool) {
+		if timeout.Nanoseconds() == 0 {
+			return
+		}
+		expires := time.Now().Add(timeout)
+		if isRead {
+			conn.SetReadDeadline(expires)
+		} else {
+			conn.SetWriteDeadline(expires)
+		}
+	}
+
+	pseudoLen := copy(tbuf, pseudo)
+
+	go func() {
+		var szoff, left int
+		if pseudoLen < 2 {
+			left = 2 - pseudoLen
+		} else {
+			szoff = pseudoLen - 2
+		}
+		defer close(die1)
+		for {
+			trySetTimeout(udpconn, true)
+			n, err := udpconn.Read(ubuf[left:])
+			if err != nil {
+				return
+			}
+			n -= pseudoLen
+			binary.BigEndian.PutUint16(ubuf[szoff:], uint16(n))
+			trySetTimeout(tcpconn, false)
+			_, err = tcpconn.Write(ubuf[szoff : szoff+n+2])
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer close(die2)
+		buf := tbuf[pseudoLen:]
+		for {
+			trySetTimeout(tcpconn, true)
+			_, err := io.ReadFull(tcpconn, buf[:2])
+			if err != nil {
+				return
+			}
+			sz := int(binary.BigEndian.Uint16(buf[:2]))
+			if sz > len(buf) {
+				return
+			}
+			_, err = io.ReadFull(tcpconn, buf[:sz])
+			if err != nil {
+				return
+			}
+			trySetTimeout(udpconn, false)
+			_, err = udpconn.Write(tbuf[:pseudoLen+sz])
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-die1:
+	case <-die2:
+	}
 }
