@@ -131,7 +131,7 @@ type SubConn struct {
 	tmpbufs []tmpBuf
 	net.PacketConn
 	connsMap *sync.Map
-	bufPool  *sync.Pool
+	mtu      int
 	raddr    net.Addr
 	rtime    time.Time
 }
@@ -143,7 +143,7 @@ func newSubConn(c net.PacketConn, ctx *UDPServerCtx, raddr net.Addr) *SubConn {
 		sigch:      make(chan int),
 		PacketConn: c,
 		connsMap:   ctx.connsMap,
-		bufPool:    ctx.bufPool,
+		mtu:        ctx.Mtu,
 		raddr:      raddr,
 	}
 }
@@ -159,7 +159,7 @@ func (conn *SubConn) input(b []byte) {
 		return
 	}
 	var tmpbuf tmpBuf
-	tmpbuf.buf = conn.bufPool.Get().([]byte)
+	tmpbuf.buf = GetBuf(conn.mtu)
 	tmpbuf.off = copy(tmpbuf.buf, b)
 	conn.tmpbufs = append(conn.tmpbufs, tmpbuf)
 }
@@ -178,7 +178,7 @@ func (conn *SubConn) Close() error {
 	}
 	if len(conn.tmpbufs) != 0 {
 		for _, tmpbuf := range conn.tmpbufs {
-			conn.bufPool.Put(tmpbuf.buf)
+			PutBuf(tmpbuf.buf)
 		}
 		conn.tmpbufs = nil
 	}
@@ -197,7 +197,7 @@ func (conn *SubConn) Read(b []byte) (n int, err error) {
 		conn.tmpbufs = conn.tmpbufs[1:]
 		n = copy(b, tmpbuf.buf[:tmpbuf.off])
 		conn.lock.Unlock()
-		conn.bufPool.Put(tmpbuf.buf)
+		PutBuf(tmpbuf.buf)
 		return
 	}
 	conn.rbuf = b

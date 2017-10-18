@@ -22,7 +22,6 @@ type UDPServerCtx struct {
 
 	once     sync.Once
 	connsMap *sync.Map
-	bufPool  *sync.Pool
 	die      chan bool
 }
 
@@ -30,9 +29,6 @@ func (ctx *UDPServerCtx) init() {
 	ctx.once.Do(func() {
 		ctx.die = make(chan bool)
 		ctx.connsMap = &sync.Map{}
-		ctx.bufPool = &sync.Pool{New: func() interface{} {
-			return make([]byte, ctx.Mtu)
-		}}
 	})
 }
 
