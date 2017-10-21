@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"golang.org/x/crypto/salsa20/salsa"
 
@@ -303,4 +304,41 @@ func GetIvLen(method string) int {
 		return m.ivlen
 	}
 	return cipherMethod[defaultMethod].ivlen
+}
+
+var initialVector = []byte{167, 115, 79, 156, 18, 172, 27, 1, 164, 21, 242, 193, 252, 120, 230, 107}
+
+type chacha20BlockCrypt struct {
+	cipherPool sync.Pool
+}
+
+func NewChaCha20BlockCrypt(key []byte) (*chacha20BlockCrypt, error) {
+	_, err := chacha20.NewCipher(key, initialVector[:8])
+	if err != nil {
+		return nil, err
+	}
+
+	c := new(chacha20BlockCrypt)
+
+	c.cipherPool.New = func() interface{} {
+		ciph, _ := chacha20.NewCipher(key, initialVector[:8])
+		return ciph
+	}
+
+	return c, nil
+}
+
+func (c *chacha20BlockCrypt) Encrypt(dst, src []byte) {
+	enc := c.cipherPool.Get().(*chacha20.Cipher)
+	defer c.cipherPool.Put(enc)
+	enc.Seek(binary.LittleEndian.Uint64(src[:8]))
+	enc.XORKeyStream(dst[8:], src[8:])
+	copy(dst[:8], src[:8])
+}
+func (c *chacha20BlockCrypt) Decrypt(dst, src []byte) {
+	dec := c.cipherPool.Get().(*chacha20.Cipher)
+	defer c.cipherPool.Put(dec)
+	dec.Seek(binary.LittleEndian.Uint64(src[:8]))
+	dec.XORKeyStream(dst[8:], src[8:])
+	copy(dst[:8], src[:8])
 }
