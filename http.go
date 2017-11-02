@@ -201,9 +201,6 @@ func (p *HTTPHeaderParser) Read(b []byte) (ok bool, err error) {
 				if isEnter(c) {
 					p.parserStatus = parsingHeadersKey
 				} else if !isCR(c) {
-					if isSpace(c) {
-						return
-					}
 					p.firstLine3Slice.eat(it)
 				}
 			}

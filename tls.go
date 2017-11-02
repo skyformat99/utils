@@ -1,9 +1,9 @@
 package utils
 
 import (
-	"strings"
-	"encoding/binary"
 	"crypto/tls"
+	"encoding/binary"
+	"strings"
 	"time"
 )
 
@@ -156,7 +156,7 @@ func (m *ClientHelloMsg) Unmarshal(data []byte) bool {
 	if sessionIdLen > 32 || len(data) < 39+sessionIdLen {
 		return false
 	}
-	m.SessionId = data[39: 39+sessionIdLen]
+	m.SessionId = data[39 : 39+sessionIdLen]
 	data = data[39+sessionIdLen:]
 	if len(data) < 2 {
 		return false
@@ -183,7 +183,7 @@ func (m *ClientHelloMsg) Unmarshal(data []byte) bool {
 	if len(data) < 1+compressionMethodsLen {
 		return false
 	}
-	m.CompressionMethods = data[1: 1+compressionMethodsLen]
+	m.CompressionMethods = data[1 : 1+compressionMethodsLen]
 
 	data = data[1+compressionMethodsLen:]
 
@@ -443,6 +443,17 @@ func (m *ClientHelloMsg) Marshal() []byte {
 		// The length is always 0
 		z = z[4:]
 	}
+	if m.TicketSupported {
+		// http://tools.ietf.org/html/rfc5077#section-3.2
+		z[0] = byte(extensionSessionTicket >> 8)
+		z[1] = byte(extensionSessionTicket)
+		l := len(m.SessionTicket)
+		z[2] = byte(l >> 8)
+		z[3] = byte(l)
+		z = z[4:]
+		copy(z, m.SessionTicket)
+		z = z[len(m.SessionTicket):]
+	}
 	if len(m.ServerName) > 0 {
 		z[0] = byte(extensionServerName >> 8)
 		z[1] = byte(extensionServerName & 0xff)
@@ -518,17 +529,6 @@ func (m *ClientHelloMsg) Marshal() []byte {
 			z[0] = pointFormat
 			z = z[1:]
 		}
-	}
-	if m.TicketSupported {
-		// http://tools.ietf.org/html/rfc5077#section-3.2
-		z[0] = byte(extensionSessionTicket >> 8)
-		z[1] = byte(extensionSessionTicket)
-		l := len(m.SessionTicket)
-		z[2] = byte(l >> 8)
-		z[3] = byte(l)
-		z = z[4:]
-		copy(z, m.SessionTicket)
-		z = z[len(m.SessionTicket):]
 	}
 	if len(m.SignatureAndHashes) > 0 {
 		// https://tools.ietf.org/html/rfc5246#section-7.4.1.4.1
@@ -816,7 +816,7 @@ func (m *ServerHelloMsg) Unmarshal(data []byte) bool {
 	if sessionIdLen > 32 || len(data) < 39+sessionIdLen {
 		return false
 	}
-	m.SessionId = data[39: 39+sessionIdLen]
+	m.SessionId = data[39 : 39+sessionIdLen]
 	data = data[39+sessionIdLen:]
 	if len(data) < 3 {
 		return false
@@ -1022,5 +1022,71 @@ func GenTLSServerHello(b []byte, l int, sessionID []byte) int {
 	binary.BigEndian.PutUint16(b[3:], uint16(l))
 	n += 5
 
+	return n
+}
+
+func GenTLSClientHello(b []byte, serverName string, sessionID []byte, sessionTicket []byte) int {
+	n := 0
+	msg := new(ClientHelloMsg)
+	msg.Vers = tls.VersionTLS12
+	msg.CipherSuites = []uint16{
+		tls.TLS_RSA_WITH_RC4_128_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+
+		// dirty hack to make simple-obfs happy
+		tls.TLS_RSA_WITH_RC4_128_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+	}
+	msg.CompressionMethods = []uint8{0}
+	msg.SessionId = sessionID
+	msg.SessionTicket = sessionTicket
+	msg.TicketSupported = true
+	msg.ServerName = serverName
+	msg.SupportedCurves = []CurveID{
+		CurveP256,
+		CurveP384,
+		CurveP521,
+		X25519,
+	}
+	msg.SupportedPoints = []uint8{0x01, 0x00, 0x02}
+	msg.SignatureAndHashes = []signatureAndHash{
+		{hashSHA256, signatureRSA},
+		{hashSHA256, signatureECDSA},
+		{hashSHA384, signatureRSA},
+		{hashSHA384, signatureECDSA},
+		{hashSHA1, signatureRSA},
+		{hashSHA1, signatureECDSA},
+	}
+	msg.Random = GetRandomBytes(32)
+	binary.BigEndian.PutUint32(msg.Random, uint32(time.Now().Unix()))
+	b[0] = 0x16
+	binary.BigEndian.PutUint16(b[1:], VersionTLS10)
+	binary.BigEndian.PutUint16(b[3:], uint16(len(msg.Marshal())))
+	copy(b[5:], msg.Marshal())
+	n = len(msg.Marshal()) + 5
 	return n
 }
