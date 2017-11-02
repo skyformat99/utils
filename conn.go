@@ -1,10 +1,14 @@
 package utils
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/willf/bitset"
 )
 
 // UDPConn is the union set of net.Conn and net.PacketConn
@@ -80,6 +84,26 @@ type UDPConn interface {
 type Conn interface {
 	net.Conn
 	WriteBuffers([][]byte) (int, error)
+}
+
+// CopyConn implements Conn
+type CopyConn struct {
+	net.Conn
+}
+
+// WriteBuffers directly copy all buffers into a larger buf and send it
+func (conn *CopyConn) WriteBuffers(bufs [][]byte) (n int, err error) {
+	for _, v := range bufs {
+		n += len(v)
+	}
+	buf := GetBuf(n)
+	defer PutBuf(buf)
+	n = 0
+	for _, v := range bufs {
+		n += copy(buf[n:], v)
+	}
+	n, err = conn.Conn.Write(buf)
+	return
 }
 
 // UtilsConn is a net.Conn that implement the interface Conn
@@ -243,4 +267,163 @@ func (conn *SubConn) SetReadDeadline(t time.Time) error {
 	defer conn.lock.Unlock()
 	conn.rtime = t
 	return nil
+}
+
+// WriteBuffers directly copy all buffers into a larger buf and send it
+func (conn *SubConn) WriteBuffers(bufs [][]byte) (n int, err error) {
+	for _, v := range bufs {
+		n += len(v)
+	}
+	buf := GetBuf(n)
+	defer PutBuf(buf)
+	n = 0
+	for _, v := range bufs {
+		n += copy(buf[n:], v)
+	}
+	n, err = conn.Write(buf)
+	return
+}
+
+// FecConn implements FEC decoder and encoder
+type FecConn struct {
+	net.Conn
+	// *config
+	fecDecoder *fecDecoder
+	fecEncoder *fecEncoder
+	checker    *packetIDChecker
+	pktid      uint64
+	recovers   [][]byte
+}
+
+func (c *FecConn) doRead(b []byte) (n int, err error) {
+	for n == 0 {
+		for len(c.recovers) != 0 {
+			r := c.recovers[0]
+			c.recovers = c.recovers[1:]
+			if len(r) < 2 {
+				continue
+			}
+			sz := int(binary.LittleEndian.Uint16(r))
+			if sz < 2 || sz > len(r) {
+				continue
+			}
+			n = copy(b, r[2:sz])
+			return
+		}
+		buf := b
+		var num int
+		num, err = c.Conn.Read(buf)
+		if err != nil {
+			return
+		}
+		f := c.fecDecoder.decodeBytes(buf[:num])
+		if f.flag == typeData {
+			n = copy(b, buf[fecHeaderSizePlus2:num])
+		}
+		if f.flag == typeData || f.flag == typeFEC {
+			c.recovers = c.fecDecoder.decode(f)
+		}
+	}
+	return
+}
+
+func (c *FecConn) Read(b []byte) (n int, err error) {
+	for {
+		var nr int
+		nr, err = c.doRead(b)
+		if err != nil {
+			return
+		}
+		if nr < 8 {
+			continue
+		}
+		pktid := binary.BigEndian.Uint64(b[nr-8:])
+		if c.checker.test(pktid) == false {
+			continue
+		}
+		n = nr - 8
+		return
+	}
+}
+
+func (c *FecConn) Write(b []byte) (n int, err error) {
+	blen := len(b)
+	ext := b[:fecHeaderSizePlus2+blen+8]
+	copy(ext[fecHeaderSizePlus2:fecHeaderSizePlus2+blen], b)
+	pktid := atomic.AddUint64(&c.pktid, 1)
+	binary.BigEndian.PutUint64(ext[fecHeaderSizePlus2+blen:], pktid)
+	ecc := c.fecEncoder.encode(ext)
+
+	_, err = c.Conn.Write(ext)
+	if err != nil {
+		return
+	}
+
+	for _, e := range ecc {
+		_, err = c.Conn.Write(e)
+		if err != nil {
+			return
+		}
+	}
+
+	n = blen
+	return
+}
+
+const maxConv = 4096
+
+type packetIDChecker struct {
+	currHead  uint64
+	oldIdsSet *bitset.BitSet
+	curIdsSet *bitset.BitSet
+	lock      sync.Mutex
+}
+
+func newPacketIDChecker() *packetIDChecker {
+	p := new(packetIDChecker)
+	p.oldIdsSet = bitset.New(maxConv)
+	p.curIdsSet = bitset.New(maxConv)
+	return p
+}
+
+func (p *packetIDChecker) testWithLock(id uint64) bool {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	return p.test(id)
+}
+
+func (p *packetIDChecker) test(id uint64) bool {
+	if id > p.currHead+2*maxConv || id+maxConv < p.currHead {
+		return false
+	}
+	if id < p.currHead {
+		off := uint(id + maxConv - p.currHead)
+		if p.oldIdsSet.Test(off) {
+			return false
+		}
+		p.oldIdsSet.Set(off)
+		return true
+	}
+	if id >= p.currHead && id < p.currHead+maxConv {
+		off := uint(id - p.currHead)
+		if p.curIdsSet.Test(off) {
+			return false
+		}
+		p.curIdsSet.Set(off)
+		return true
+	}
+	o := p.oldIdsSet.ClearAll()
+	p.oldIdsSet = p.curIdsSet
+	p.curIdsSet = o
+	p.currHead += maxConv
+	return p.test(id)
+}
+
+func NewFecConn(conn net.Conn, datashard, parityshard int) *FecConn {
+	return &FecConn{
+		Conn:       conn,
+		fecDecoder: newFECDecoder(3*(datashard+parityshard), datashard, parityshard),
+		fecEncoder: newFECEncoder(datashard, parityshard, 0),
+		checker:    newPacketIDChecker(),
+	}
 }
