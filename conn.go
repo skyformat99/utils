@@ -348,7 +348,9 @@ func (c *FecConn) Read(b []byte) (n int, err error) {
 
 func (c *FecConn) Write(b []byte) (n int, err error) {
 	blen := len(b)
-	ext := b[:fecHeaderSizePlus2+blen+8]
+	ext := GetBuf(fecHeaderSizePlus2 + blen + 8)
+	defer PutBuf(ext)
+	ext = ext[:fecHeaderSizePlus2+blen+8]
 	copy(ext[fecHeaderSizePlus2:fecHeaderSizePlus2+blen], b)
 	pktid := atomic.AddUint64(&c.pktid, 1)
 	binary.BigEndian.PutUint64(ext[fecHeaderSizePlus2+blen:], pktid)
@@ -425,5 +427,54 @@ func NewFecConn(conn net.Conn, datashard, parityshard int) *FecConn {
 		fecDecoder: newFECDecoder(3*(datashard+parityshard), datashard, parityshard),
 		fecEncoder: newFECEncoder(datashard, parityshard, 0),
 		checker:    newPacketIDChecker(),
+	}
+}
+
+type DupConn struct {
+	net.Conn
+	magnification int
+	pktid         uint64
+	checker       *packetIDChecker
+}
+
+func (c *DupConn) Read(b []byte) (n int, err error) {
+AGAIN:
+	nr, err := c.Conn.Read(b)
+	if err != nil {
+		return
+	}
+	if nr < 8 {
+		goto AGAIN
+	}
+	pktid := binary.BigEndian.Uint64(b[nr-8 : nr])
+	if c.checker.test(pktid) == false {
+		goto AGAIN
+	}
+	n = nr - 8
+	return
+}
+
+func (c *DupConn) Write(b []byte) (n int, err error) {
+	blen := len(b)
+	b2 := GetBuf(blen + 8)
+	defer PutBuf(b2)
+	copy(b2, b)
+	for it := 0; it < c.magnification; it++ {
+		pktid := atomic.AddUint64(&c.pktid, 1)
+		binary.BigEndian.PutUint64(b2[blen:], pktid)
+		_, err = c.Conn.Write(b2)
+		if err != nil {
+			return
+		}
+	}
+	n = blen
+	return
+}
+
+func NewDupConn(conn net.Conn, magnification int) *DupConn {
+	return &DupConn{
+		Conn:          conn,
+		magnification: magnification,
+		checker:       newPacketIDChecker(),
 	}
 }
