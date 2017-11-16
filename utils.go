@@ -229,17 +229,22 @@ var domainNodePool = &sync.Pool{New: func() interface{} {
 	}
 }}
 
-// DomainRoot is a tree
+// DomainRoot is a simple trie tree
 type DomainRoot struct {
-	nodes     map[string]*domainNode
+	node      *domainNode
 	nodesPool sync.Pool
+}
+
+type domainNode struct {
+	hit    bool
+	any    bool
+	domain string
+	nodes  map[string]*domainNode
 }
 
 // NewDomainRoot returns a new domainroot and init it
 func NewDomainRoot() *DomainRoot {
-	return &DomainRoot{
-		nodes: make(map[string]*domainNode),
-	}
+	return &DomainRoot{node: &domainNode{nodes: make(map[string]*domainNode)}}
 }
 
 func reverse(ss []string) {
@@ -249,6 +254,15 @@ func reverse(ss []string) {
 	}
 }
 
+func (node *domainNode) markAny() {
+	node.any = true
+	for k, v := range node.nodes {
+		v.markAny()
+		delete(node.nodes, k)
+	}
+	node.nodes = nil
+}
+
 // Put put a new host into domainroot
 func (root *DomainRoot) Put(host string) {
 	domains := strings.Split(host, ".")
@@ -256,37 +270,38 @@ func (root *DomainRoot) Put(host string) {
 		return
 	}
 	reverse(domains)
-	nodes := root.nodes
-	var depth int
-	for _, domain := range domains {
+	node := root.node
+	for it, domain := range domains {
 		if len(domain) == 0 {
 			continue
 		}
-		depth++
-		v, ok := nodes["*"]
-		if ok {
+		if node.any {
 			return
 		}
-		v, ok = nodes[domain]
+		if domain == "*" {
+			node.markAny()
+			return
+		}
+		v, ok := node.nodes[domain]
 		if ok {
-			if len(v.nodes) > 10 && depth > 1 {
-				for k := range v.nodes {
-					delete(v.nodes, k)
-				}
-				v.nodes["*"] = nil
+			if v.any {
 				return
 			}
-			nodes = v.nodes
+			if len(v.nodes) > 10 && it > 0 {
+				v.markAny()
+				return
+			}
+			node = v
 			continue
 		}
 		v = &domainNode{
-			depth:  depth,
 			domain: domain,
 			nodes:  make(map[string]*(domainNode)),
 		}
-		nodes[domain] = v
-		nodes = v.nodes
+		node.nodes[domain] = v
+		node = v
 	}
+	node.hit = true
 }
 
 func (root *DomainRoot) Test(host string) bool {
@@ -295,57 +310,50 @@ func (root *DomainRoot) Test(host string) bool {
 		return false
 	}
 	reverse(domains)
-	nodes := root.nodes
-	depth := 0
+	node := root.node
 	for _, domain := range domains {
 		if len(domain) == 0 {
 			continue
 		}
-		v, ok := nodes["*"]
-		if ok {
+		if node.any {
 			return true
 		}
-		v, ok = nodes[domain]
+		v, ok := node.nodes[domain]
 		if !ok {
 			return false
 		}
-		depth++
-		nodes = v.nodes
+		node = v
 	}
-	if len(domains) == depth {
-		return true
-	}
-	return false
+	return node.hit
 }
 
 func (root *DomainRoot) Get() (hosts []string) {
 	var domains []string
-	var f func(map[string]*domainNode)
-	f = func(nodes map[string]*domainNode) {
-		for domain, node := range nodes {
-			domains = append([]string{domain}, domains...)
-			if node == nil {
-				f(nil)
-			} else {
-				f(node.nodes)
+	var f func(*domainNode)
+
+	f = func(node *domainNode) {
+		if len(node.domain) != 0 {
+			domains = append([]string{node.domain}, domains...)
+			if node.any {
+				host := strings.Join(domains, ".")
+				host = "*." + host
+				hosts = append(hosts, host)
+			} else if node.hit {
+				host := strings.Join(domains, ".")
+				hosts = append(hosts, host)
 			}
-			domains = domains[1:]
 		}
-		if len(nodes) == 0 {
-			host := strings.Join(domains, ".")
-			hosts = append(hosts, host)
+		for _, v := range node.nodes {
+			f(v)
+		}
+		if len(node.domain) != 0 {
+			domains = domains[1:]
 		}
 	}
 
-	f(root.nodes)
+	f(root.node)
 
 	return
-}
-
-type domainNode struct {
-	domain string
-	depth  int
-	nodes  map[string]*domainNode
 }
 
 func SplitHostAndPort(hostport string) (host string, port int, err error) {
